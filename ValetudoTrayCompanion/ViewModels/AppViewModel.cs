@@ -18,6 +18,7 @@ public partial class AppViewModel
     private readonly IClassicDesktopStyleApplicationLifetime _desktopLifetime;
     private readonly TrayIcon _icon = new();
     private readonly List<NativeMenuItemBase> _controlItems = new();
+    private readonly List<(NativeMenuItem Menu, EventHandler OnClick)> _deviceItems = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly AutostartManager _autostartManager = new();
     private List<DiscoveredValetudoInstance> _discoveredInstances = new();
@@ -85,15 +86,21 @@ public partial class AppViewModel
         
         _icon.Menu!.Items.Clear();
         
+        foreach (var deviceItem in _deviceItems)
+        {
+            deviceItem.Menu.Click -= deviceItem.OnClick; // Avoid event handler leak
+        }
+        
+        _deviceItems.Clear();
+
+        
         foreach (var discoveredValetudoInstance in _discoveredInstances)
         {
             var item = new NativeMenuItem(discoveredValetudoInstance.FriendlyName);
+            EventHandler onclick = (_, _) => OpenUrl("http://" + discoveredValetudoInstance.Address);
+            item.Click += onclick;
+            _deviceItems.Add((item, onclick));
             _icon.Menu!.Items.Add(item);
-
-            item.Click += (_, _) =>
-            {
-                OpenUrl("http://" + discoveredValetudoInstance.Address);
-            };
         }
 
         if (_discoveredInstances.Count > 0)
@@ -105,8 +112,11 @@ public partial class AppViewModel
         {
             _icon.Menu.Items.Add(controlItem);
         }
+
+        GC.Collect(); // Clean up heap
+        GC.WaitForPendingFinalizers();
     }
-    
+
     private async void StartDiscoveryLoop()
     {
         var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
@@ -115,7 +125,7 @@ public partial class AppViewModel
             await DiscoverInstances();
             while (await timer.WaitForNextTickAsync(_cts.Token))
             {
-                var now = DateTime.Now;
+                var now = DateTimeOffset.UtcNow;
                 _discoveredInstances = _discoveredInstances.Where(x => (now - x.LastSeen).TotalMinutes <= 5).ToList();
             
                 await DiscoverInstances();
@@ -146,15 +156,17 @@ public partial class AppViewModel
                 }
             }
             
-            if (props.ContainsKey("id") && props.ContainsKey("manufacturer") && props.ContainsKey("model"))
+            if (props.TryGetValue("id", out string? id) &&
+                props.TryGetValue("manufacturer", out string? manufacturer) &&
+                props.TryGetValue("model", out string? model))
             {
-                var existingInstance = _discoveredInstances.FirstOrDefault(x => x.Id == props["id"]);
+                var existingInstance = _discoveredInstances.FirstOrDefault(x => x.Id == id);
                 if (existingInstance == null)
                 {
                     _discoveredInstances.Add(
                         new DiscoveredValetudoInstance(
-                            props["id"],
-                            $"{props["manufacturer"]} {props["model"]} ({props["id"]})",
+                            id,
+                            $"{manufacturer} {model} ({id})",
                             zeroconfHost.IPAddress
                         )
                     );
